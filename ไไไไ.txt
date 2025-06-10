@@ -1,0 +1,67 @@
+_G.TargetName = "Dragonfly" 
+_G.webhookUrl = "หาเองพี่"
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local DataSer = require(game:GetService("ReplicatedStorage").Modules.DataService)
+
+function sendHook(url, playerName, found, petName, time, imageUrl)
+    local description
+
+    if found then
+        description = "*By # __อาชีวะ โรตี__*\n\n# PLAYER: " .. playerName .. "\n\n✅ " .. petName .. "\n\n🕒 " .. time .. "\nรีบไปเปิดไอ้น้อง"
+    else
+        description = "*By # __อาชีวะ โรตี__*\n\n# PLAYER: " .. playerName .. "\n\n❌ rejoy not pet give me\n\n🕒 " .. time .. "\nอย่าพึ่งไปเปิดไอ้น้อง"
+    end
+
+    local embed = {
+        ["embeds"] = {{
+            ["description"] = description,
+            ["color"] = found and 0x800080 or 0xFF0000, 
+            ["thumbnail"] = {["url"] = imageUrl}
+        }}
+    }
+
+    local Http = HttpService:JSONEncode(embed)
+    local headers = {["content-type"] = "application/json"}
+    local request = http_request or request or HttpPost or syn.request or http
+    local Webhook_Data = {Url = url, Body = Http, Method = "POST", Headers = headers}
+
+    request(Webhook_Data)
+end
+
+-- MAIN CHECK
+task.wait(1)
+
+local player = Players.LocalPlayer
+local playerName = player.Name
+local timeNow = os.date("%Y-%m-%d %H:%M:%S")
+local imageUrl = "https://i.postimg.cc/phXm27qk/your-image.png"
+
+local found = false
+local petName = ""
+
+for _, v in pairs(DataSer:GetData().SavedObjects) do
+    if v.ObjectType == "PetEgg" and v.Data.RandomPetData and v.Data.CanHatch then
+        local name = v.Data.RandomPetData.Name
+        if typeof(_G.TargetName) == "string" and name == _G.TargetName then
+            found = true
+            petName = name
+            break
+        elseif typeof(_G.TargetName) == "table" and table.find(_G.TargetName, name) then
+            found = true
+            petName = name
+            break
+        end
+    end
+end
+
+sendHook(_G.webhookUrl, playerName, found, petName, timeNow, imageUrl)
+
+if not found then
+    task.wait(3)
+    player:Kick("ไม่มีสัตว์ที่มึงเลือก\\กำลังรีหา")
+    task.wait(1)
+    TeleportService:Teleport(game.PlaceId, player)
+end
