@@ -1,0 +1,241 @@
+
+
+import discord
+from discord.ext import commands
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+categories = {
+    "🌱 ฟาร์มเลเวล": {"ฟาร์มเลเวล (0.25฿/Lv)": 0.25},
+    "💰 เงิน": {"เงินเขียว 1M": 1, "เงินม่วง 1K": 1},
+    "♣️ ไอเทม": {"หมวก": 25, "กระจก": 25, "6 หมัด": 30, "ล่าลิเวียทาน 50 (หมัด 70)": 50},
+    "🗡️ อาวุธ": {
+        "สมอ": 25, "ซูทิตะ": 25, "ยามะ": 25, "สามโซโร": 25,
+        "ดาบคู่": 30, "ปืนมังกร": 70, "ฆทาจิ้งจอก": 35,
+        "หอกมังกร": 50, "กีต้า": 25
+    },
+    "🔥 ฮาคิ & เผ่า": {
+        "ไซบอร์ก": 35, "กูล": 40,
+        "V4 T1–T10 (Override)": 60,
+        "มังกร V4 T10": 250,
+        "ฮาคิสังเกตุ V2": 50
+    }
+}
+
+carts = {}
+user_ticket_channels = {}
+ROLE_IDS = [1416003008680038420, 1415985351008456825]
+
+def calculate_total(user_id):
+    return sum(float(item.split("-")[-1].replace("฿","")) for item in carts.get(user_id, []))
+
+async def create_ticket_channel(user, guild):
+    if user.id in user_ticket_channels:
+        return guild.get_channel(user_ticket_channels[user.id])
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+    }
+    ticket_number = len(user_ticket_channels) + 1
+    channel = await guild.create_text_channel(
+        name=f"ticket-{ticket_number:04}",
+        overwrites=overwrites,
+        reason="คำสั่งซื้อจากร้านค้า"
+    )
+    user_ticket_channels[user.id] = channel.id
+    roles_mention = " ".join([f"<@&{r}>" for r in ROLE_IDS])
+    await channel.send(f"{roles_mention} New ticket created by {user.mention}!")
+    await channel.send("กดปุ่มด้านล่างเพื่อปิดห้อง", view=CloseTicketView(channel))
+    return channel
+
+class QuantityModal(discord.ui.Modal):
+    def __init__(self, item_name, price):
+        super().__init__(title=f"จำนวน {item_name}")
+        self.item_name = item_name
+        self.price = price
+        self.qty_input = discord.ui.TextInput(label="จำนวน", placeholder="ใส่ตัวเลข", required=True, max_length=5)
+        self.add_item(self.qty_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            qty = int(self.qty_input.value)
+            if qty < 1:
+                raise ValueError
+        except:
+            await interaction.response.send_message("❌ ใส่จำนวนไม่ถูกต้อง", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        carts.setdefault(user_id, []).append(f"{self.item_name} x{qty} - {self.price*qty}฿")
+        total = calculate_total(user_id)
+        await interaction.response.send_message(f"🛒 เพิ่ม {self.item_name} x{qty} เข้าตะกร้า รวมตอนนี้: {total}฿", ephemeral=True)
+
+class ProductButton(discord.ui.Button):
+    def __init__(self, label, price, category):
+        super().__init__(label=f"{label} :: {price}฿", style=discord.ButtonStyle.secondary)
+        self.item = label
+        self.price = price
+        self.category = category
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.category in ["🌱 ฟาร์มเลเวล", "💰 เงิน"]:
+            await interaction.response.send_modal(QuantityModal(self.item, self.price))
+        else:
+            user_id = interaction.user.id
+            carts.setdefault(user_id, []).append(f"{self.item} - {self.price}฿")
+            total = calculate_total(user_id)
+            await interaction.response.send_message(f"🛒 เพิ่ม {self.item} เข้าตะกร้า รวมตอนนี้: {total}฿", ephemeral=True)
+
+class RemoveItemButton(discord.ui.Button):
+    def __init__(self, label, index, user_id):
+        super().__init__(label=label, style=discord.ButtonStyle.danger)
+        self.index = index
+        self.user_id = user_id
+
+    async def callback(self, interaction):
+        try:
+            removed_item = carts[self.user_id].pop(self.index)
+            await interaction.response.send_message(f"🗑️ ลบ {removed_item} ออกจากตะกร้าแล้ว", ephemeral=True)
+        except:
+            await interaction.response.send_message("❌ เกิดข้อผิดพลาด ลบไม่สำเร็จ", ephemeral=True)
+
+class ClearCartButton(discord.ui.Button):
+    def __init__(self, user_id):
+        super().__init__(label="🗑️ ล้างตะกร้า", style=discord.ButtonStyle.secondary)
+        self.user_id = user_id
+
+    async def callback(self, interaction):
+        carts[self.user_id] = []
+        await interaction.response.send_message("🗑️ ล้างตะกร้าเรียบร้อยแล้ว", ephemeral=True)
+
+class ConfirmOrderButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ ยืนยันคำสั่งซื้อ", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        items = carts.get(user_id, [])
+        if not items:
+            await interaction.response.send_message("❌ ตะกร้าว่าง", ephemeral=True)
+            return
+        total = calculate_total(user_id)
+        content = f"**คำสั่งซื้อจาก {interaction.user.display_name}**\n\n"
+        content += "\n".join(items)
+        content += f"\n\n**รวมทั้งหมด: {total}฿**"
+        channel = await create_ticket_channel(interaction.user, interaction.guild)
+        await channel.send(content)
+        carts[user_id] = []
+        await interaction.response.send_message("✅ ยืนยันคำสั่งซื้อเรียบร้อยแล้ว! ตรวจสอบห้อง Ticket ของคุณ", ephemeral=True)
+
+class ManageCartView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        items = carts.get(user_id, [])
+        for idx, item in enumerate(items):
+            self.add_item(RemoveItemButton(label=f"❌ {item}", index=idx, user_id=user_id))
+        if items:
+            self.add_item(ClearCartButton(user_id=user_id))
+            self.add_item(ConfirmOrderButton())
+
+class ViewCartButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🛒 ดูตะกร้า", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        items = carts.get(user_id, [])
+        if not items:
+            await interaction.response.send_message("❌ ตะกร้าว่าง", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title=f"{interaction.user.display_name} ตะกร้าของคุณ",
+            description="\n".join(items) + f"\n\n**รวมทั้งหมด: {calculate_total(user_id)}฿**",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, view=ManageCartView(user_id), ephemeral=True)
+
+class CategoryView(discord.ui.View):
+    def __init__(self, category_name):
+        super().__init__(timeout=None)
+        for item, price in categories[category_name].items():
+            self.add_item(ProductButton(item, price, category_name))
+        self.add_item(ViewCartButton())
+
+class CategoryButton(discord.ui.Button):
+    def __init__(self, label):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.cat_name = label
+
+    async def callback(self, interaction):
+        if self.cat_name in categories:
+            embed = discord.Embed(
+                title=f"{self.cat_name}",
+                description="\n".join([f"▸ {item} :: {price}฿" for item, price in categories[self.cat_name].items()]),
+                color=discord.Color.purple()
+            )
+            await interaction.response.send_message(embed=embed, view=CategoryView(self.cat_name), ephemeral=True)
+
+class MainCategoryView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for cat in categories.keys():
+            self.add_item(CategoryButton(cat))
+
+class CloseTicketView(discord.ui.View):
+    def __init__(self, channel):
+        super().__init__(timeout=None)
+        self.channel = channel
+        self.add_item(CloseTicketButton(channel))
+
+class CloseTicketButton(discord.ui.Button):
+    def __init__(self, channel):
+        super().__init__(label="🔒 ปิดห้อง", style=discord.ButtonStyle.danger)
+        self.channel = channel
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("⚠️ คุณแน่ใจหรือไม่ว่าต้องการปิดห้องนี้?", view=ConfirmCloseView(self.channel), ephemeral=True)
+
+class ConfirmCloseView(discord.ui.View):
+    def __init__(self, channel):
+        super().__init__(timeout=None)
+        self.channel = channel
+        self.add_item(ConfirmCloseButton(channel))
+        self.add_item(CancelCloseButton())
+
+class ConfirmCloseButton(discord.ui.Button):
+    def __init__(self, channel):
+        super().__init__(label="✅ ใช่ ปิดห้อง", style=discord.ButtonStyle.success)
+        self.channel = channel
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("ปิดห้องเรียบร้อยแล้ว!", ephemeral=True)
+        for uid, cid in list(user_ticket_channels.items()):
+            if cid == self.channel.id:
+                del user_ticket_channels[uid]
+        await self.channel.delete()
+
+class CancelCloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="❌ ยกเลิก", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("ยกเลิกการปิดห้อง", ephemeral=True)
+
+@bot.command()
+async def mj(ctx):
+    embed = discord.Embed(
+        title="Miku store ",
+        description="Miku รับจ้างฟามไอเทมต่างๆ:",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed, view=MainCategoryView())
+
+bot.run(TOKEN)
+
